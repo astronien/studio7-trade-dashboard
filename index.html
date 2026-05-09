@@ -468,10 +468,15 @@ function readXlsx(file){
   return new Promise((res,rej)=>{
     const r=new FileReader();
     r.onload=e=>{
-      const wb=XLSX.read(e.target.result,{type:'array',cellStyles:false,cellFormulas:false,cellHTML:false,cellText:false,dense:true});
-      res(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:null}));
+      try{
+        const wb=XLSX.read(e.target.result,{type:'array',cellStyles:false,cellFormulas:false,cellHTML:false,cellText:false,dense:true});
+        res(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:null}));
+      }catch(ex){
+        rej(new Error('อ่านไฟล์ไม่สำเร็จ ('+file.name+'): '+(ex?.message||String(ex))));
+      }
     };
-    r.onerror=rej; r.readAsArrayBuffer(file);
+    r.onerror=ev=>rej(new Error('FileReader error ('+file.name+'): '+(ev.target?.error?.message||'ไม่ทราบสาเหตุ')));
+    r.readAsArrayBuffer(file);
   });
 }
 function findCol(sample, candidates){ for(const c of candidates){ if(c in sample) return c; } return candidates[0]; }
@@ -855,7 +860,7 @@ async function processFiles(){
   }catch(err){
     document.getElementById('loading').classList.add('hidden');
     document.getElementById('process-btn').classList.remove('hidden');
-    errEl.textContent='เกิดข้อผิดพลาด: '+err.message;
+    errEl.textContent='เกิดข้อผิดพลาด: '+(err?.message||String(err)||'ไม่ทราบสาเหตุ');
     errEl.classList.remove('hidden');
     console.error(err);
   }
