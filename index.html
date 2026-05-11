@@ -648,10 +648,12 @@ function parseTradeSearch(rows, activeDates, salesKeys, empNameMap={}, salesBran
   const AGREED_STATUS=new Set([5,7]);
   const summary={};
   const byEmp={};
+  // Map สถานะ Thai text → numeric code (เหมือน server-side kpi-calculator)
+  const THAI_STATUS_CODE={'สิ้นสุดการประเมินราคา':5,'ยืนยันราคาแล้ว':7,'ยกเลิกรายการ':6,'รอผู้ขายยืนยันราคา':3,'รอการประเมินราคา':1,'อยู่ระหว่างผู้รับซื้อให้ราคา':2,'กำลังสร้างเอกสาร':4};
   rows.forEach(r=>{
-    // ใช้ branch_code (ID ตัวเลข) จับคู่กับ salesBranchIdMap ก่อน เพื่อหลีกเลี่ยงปัญหาสะกดชื่อต่างกัน
+    // ใช้ branch_code / รหัสสาขา / BRANCH_ID (ID ตัวเลข) จับคู่กับ salesBranchIdMap ก่อน
     let branch, isMatchedToSales;
-    const rawCode=s(r['branch_code']||'');
+    const rawCode=s(r['branch_code']||r['รหัสสาขา']||r['BRANCH_ID']||'');
     const branchId=rawCode?String(parseInt(rawCode,10)||0):'';
     if(branchId&&branchId!=='0'&&salesBranchIdMap[branchId]){
       branch=salesBranchIdMap[branchId];
@@ -670,12 +672,18 @@ function parseTradeSearch(rows, activeDates, salesKeys, empNameMap={}, salesBran
         isMatchedToSales=false;
       }
     }
-    // date filter (CE format DD/MM/YYYY) — เฉพาะสาขาที่อยู่ใน sales file เท่านั้น
+    // date filter — เฉพาะสาขาที่อยู่ใน sales file เท่านั้น
+    // รองรับทั้ง DD/MM/YYYY และ ISO YYYY-MM-DD (normalize เป็น DD/MM/YYYY ก่อนเปรียบเทียบ)
     if(isMatchedToSales&&activeDates.size>0){
-      const td=s(r['วันที่คำสั่งเทรด']||'');
+      let td=s(r['วันที่คำสั่งเทรด']||'');
+      const isoM=td.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if(isoM)td=`${isoM[3]}/${isoM[2]}/${isoM[1]}`;
       if(!activeDates.has(td))return;
     }
-    const bst=Number(r['BIDDING_STATUS'])||0;
+    // ยอดเห็นด้วย: ลอง BIDDING_STATUS (ตัวเลข) ก่อน ถ้าไม่มีให้ใช้ สถานะ (Thai text)
+    let bst=0;
+    if(r['BIDDING_STATUS']!=null&&r['BIDDING_STATUS']!==''){bst=Number(r['BIDDING_STATUS'])||0;}
+    else{bst=THAI_STATUS_CODE[s(r['สถานะ']||'')]||0;}
     const agreed=AGREED_STATUS.has(bst)?1:0;
     if(!summary[branch])summary[branch]={evaluated:0,agreed:0,not_agreed:0};
     summary[branch].evaluated++;
@@ -816,10 +824,12 @@ async function processFiles(){
       if(dateFiltered){
         DATA_MONTHS=salesDateBadge;
       } else {
-        // แสดงช่วงเดือนจากไฟล์เทรดแทน
+        // แสดงช่วงเดือนจากไฟล์เทรดแทน (รองรับทั้ง DD/MM/YYYY และ ISO YYYY-MM-DD)
         const tradeMths=new Set();
         tRows.forEach(r=>{
-          const td=s(r['วันที่คำสั่งเทรด']||'');
+          let td=s(r['วันที่คำสั่งเทรด']||'');
+          const isoM2=td.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          if(isoM2)td=`${isoM2[3]}/${isoM2[2]}/${isoM2[1]}`;
           const mp=td.match(/\d{2}\/(\d{2})\/\d{4}/);
           if(mp){ const mn=parseInt(mp[1]); if(mn>=1&&mn<=12)tradeMths.add(mn); }
         });
