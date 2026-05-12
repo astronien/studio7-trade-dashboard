@@ -665,7 +665,9 @@ function devFromProduct(prod){
 // billToEmp = {billNo(string) → {empId,name,branch}} lookup จากเลขบิล Sales คอลัม Q
 // tBillCol = ชื่อ header ของคอลัม IT ในไฟล์เทรด (เลขบิลขาย)
 function parseTradeSearch(rows, activeDates, salesKeys, empNameMap={}, salesBranchIdMap={}, billToEmp={}, tBillCol=null){
-  const AGREED_STATUS=new Set([5,7]);
+  // ตกลงเทรด = สิ้นสุดการประเมินราคา (5) เท่านั้น
+  // ยอดประเมิน = ทุกสถานะ (นับทุก row)
+  const AGREED_STATUS=new Set([5]);
   const summary={};
   const byEmp={};
   // Map สถานะ Thai text → numeric code (เหมือน server-side kpi-calculator)
