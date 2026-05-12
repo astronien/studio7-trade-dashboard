@@ -778,6 +778,7 @@ async function processFiles(){
     const empNameMap={}, salesBranchIdMap={}, activeMths=new Set(), activeDates=new Set();
     const salesByBranch={}, salesByEmp={}, salesEmpBranch={}, billToEmp={};
     const salesByBranchYm={}; // {branch:{ym:{mac,ipad,iphone,watch}}} for month filter
+    const salesByEmpYm={};   // {empId:{ym:{mac,ipad,iphone,watch}}} for date range filter
     sRows.forEach(r=>{
       const raw=s(r[kDate]);
       let rowYm=null;
@@ -820,6 +821,11 @@ async function processFiles(){
       if(!oid)return;
       if(!salesByEmp[oid])salesByEmp[oid]={};
       salesByEmp[oid][dev]=(salesByEmp[oid][dev]||0)+qty;
+      if(rowYm){
+        if(!salesByEmpYm[oid])salesByEmpYm[oid]={};
+        if(!salesByEmpYm[oid][rowYm])salesByEmpYm[oid][rowYm]={mac:0,ipad:0,iphone:0,watch:0};
+        salesByEmpYm[oid][rowYm][dev]+=qty;
+      }
       if(!salesEmpBranch[oid])salesEmpBranch[oid]=(bid&&bid!=='0'&&salesBranchIdMap[bid])?salesBranchIdMap[bid]:branch;
     });
 
@@ -936,6 +942,7 @@ async function processFiles(){
     const AGREED_ST_YM=new Set([5]);
     const THAI_ST_YM={'สิ้นสุดการประเมินราคา':5,'ยืนยันราคาแล้ว':7,'ยกเลิกรายการ':6,'รอผู้ขายยืนยันราคา':3,'รอการประเมินราคา':1,'อยู่ระหว่างผู้รับซื้อให้ราคา':2,'กำลังสร้างเอกสาร':4};
     const tradeByYm={};
+    const byEmpYm={};  // {empId:{ym:{agreed,evaluated}}} for date range filter
     if(tradeFormat==='search'){
       // derive from raw transaction rows — ไม่ filter ตามวันที่ (เพื่อให้ครบทุกสาขา ทุกเดือน)
       tRows.forEach(r=>{
@@ -968,6 +975,14 @@ async function processFiles(){
         if(r['BIDDING_STATUS']!=null&&r['BIDDING_STATUS']!==''){_bst=Number(r['BIDDING_STATUS'])||0;}
         else{_bst=THAI_ST_YM[s(r['สถานะ']||'')]||0;}
         if(AGREED_ST_YM.has(_bst))tradeByYm[branch][ym].agreed++;
+        // ติดตาม per-employee per-YM (ใช้ emp ID จากไฟล์ trade โดยตรง)
+        const _eid=s(r['รหัสพนักงานขาย']||'');
+        if(_eid){
+          if(!byEmpYm[_eid])byEmpYm[_eid]={};
+          if(!byEmpYm[_eid][ym])byEmpYm[_eid][ym]={agreed:0,evaluated:0};
+          byEmpYm[_eid][ym].evaluated++;
+          if(AGREED_ST_YM.has(_bst))byEmpYm[_eid][ym].agreed++;
+        }
       });
     } else {
       // report format: use byMonth; infer year from salesByBranchYm keys
@@ -996,7 +1011,9 @@ async function processFiles(){
       available_yms:availableYMs,
       trade_format:tradeFormat,
       by_emp:byEmpTrade,
+      by_emp_ym:byEmpYm,
       sales_by_emp:salesByEmp,
+      sales_by_emp_ym:salesByEmpYm,
       emp_names:empNameMap,
       emp_branch:salesEmpBranch,
       branch_amrm:branchAMRM,
@@ -1470,9 +1487,9 @@ function buildBranchYearChart(){
     entities=Object.entries(byEmp)
       .filter(([,v])=>filterBranches.size===0||filterBranches.has(v.branch))
       .map(([empId,v])=>{
-        const sb=DATA.sales_by_emp?.[empId]||{};
-        const sold=devs.reduce((t,d)=>t+(sb[d]||0),0);
-        return{name:v.name||empId,att1:0,att2:sold>0?+(v.agreed/sold*100).toFixed(1):0,s1:0,s2:sold,a1:0,a2:v.agreed};
+        const sold=sumEmpSales(empId,devs);
+        const {agreed}=sumEmpTrade(empId);
+        return{name:v.name||empId,att1:0,att2:sold>0?+(agreed/sold*100).toFixed(1):0,s1:0,s2:sold,a1:0,a2:agreed};
       }).filter(r=>r.a2>0);
   }
 
@@ -1748,10 +1765,11 @@ function drillDown(branch){
     .filter(([,v])=>v.branch===branch)
     .map(([empId,v])=>{
       const perDev={};
-      devs.forEach(d=>{ perDev[d]=(DATA.sales_by_emp[empId]||{})[d]||0; });
+      devs.forEach(d=>{ perDev[d]=sumEmpSales(empId,[d]); });
       const devSold=devs.reduce((s,d)=>s+perDev[d],0);
-      const empAtt=pct(v.agreed,devSold);
-      return{empId,name:v.name,agreed:v.agreed,evaluated:v.evaluated,devSold,empAtt,perDev};
+      const {agreed,evaluated}=sumEmpTrade(empId);
+      const empAtt=pct(agreed,devSold);
+      return{empId,name:v.name,agreed,evaluated,devSold,empAtt,perDev};
     })
     .sort((a,b)=>b.empAtt-a.empAtt||b.agreed-a.agreed);
 
@@ -1804,9 +1822,9 @@ function renderSummary(sorted, devs){
     const attColor = danger ? 'text-red-600 font-black' : (attP>=60?'text-emerald-600 font-black':'text-amber-600 font-black');
     const barColor = danger ? 'bg-red-400' : (attP>=60?'bg-emerald-500':attP>=40?'bg-amber-400':'bg-orange-400');
     const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
-    // device mini-bars
+    // device mini-bars (ใช้ sumSales per device เพื่อ respect date range)
     const devMini = `<div class="flex flex-col gap-0.5">${devs.map(d=>{
-      const sold=(DATA.sales_by_branch[branch]||{})[d]||0;
+      const sold=sumSales(branch,[d]);
       return `<div class="flex items-center gap-1 text-[10px] leading-tight">
         <span>${DEV_ICONS[d]}</span>
         <span class="text-gray-600 font-semibold">${sold}</span>
@@ -1855,10 +1873,9 @@ function renderEmpSummary(devs, amrmBranches){
     if(amrmBranches&&!amrmBranches.has(branch))return null;
     const name=DATA.by_emp[empId]?.name||DATA.emp_names[empId]||empId;
     const perDev={};
-    devs.forEach(d=>{ perDev[d]=(DATA.sales_by_emp[empId]||{})[d]||0; });
+    devs.forEach(d=>{ perDev[d]=sumEmpSales(empId,[d]); });
     const devSold=devs.reduce((s,d)=>s+perDev[d],0);
-    const agreed=DATA.by_emp[empId]?.agreed||0;
-    const evaluated=DATA.by_emp[empId]?.evaluated||0;
+    const {agreed,evaluated}=sumEmpTrade(empId);
     const attP=pct(agreed,devSold);
     return{empId,name,branch,perDev,devSold,evaluated,agreed,attP};
   }).filter(Boolean).sort((a,b)=>b.attP-a.attP||b.agreed-a.agreed||b.devSold-a.devSold);
@@ -2160,7 +2177,26 @@ function sumSales(b,devs){
   }
   return devs.reduce((s,d)=>s+active.reduce((sum,ym)=>sum+(DATA.sales_by_branch_ym?.[b]?.[ym]?.[d]||0),0),0);
 }
-function sumEmpSales(empId,devs){ const se=DATA.sales_by_emp[String(empId)]||{}; return devs.reduce((s,d)=>s+(se[d]||0),0); }
+function sumEmpSales(empId,devs){
+  const id=String(empId);
+  const active=getActiveYMs();
+  const all=DATA?.available_yms||[];
+  if(!DATE_RANGE_START&&!DATE_RANGE_END&&active.length===all.length){
+    const se=DATA.sales_by_emp[id]||{}; return devs.reduce((s,d)=>s+(se[d]||0),0);
+  }
+  return devs.reduce((s,d)=>s+active.reduce((sum,ym)=>sum+(DATA.sales_by_emp_ym?.[id]?.[ym]?.[d]||0),0),0);
+}
+function sumEmpTrade(empId){
+  const id=String(empId);
+  const active=getActiveYMs();
+  const all=DATA?.available_yms||[];
+  if(!DATE_RANGE_START&&!DATE_RANGE_END&&active.length===all.length){
+    const t=DATA.by_emp[id]||{agreed:0,evaluated:0}; return{agreed:t.agreed,evaluated:t.evaluated};
+  }
+  let agreed=0,evaluated=0;
+  active.forEach(ym=>{const t=DATA.by_emp_ym?.[id]?.[ym]||{};agreed+=(t.agreed||0);evaluated+=(t.evaluated||0);});
+  return{agreed,evaluated};
+}
 function sumAllTrades(b){
   const active=getActiveYMs();
   const all=DATA?.available_yms||[];
