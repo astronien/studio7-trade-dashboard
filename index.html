@@ -932,24 +932,30 @@ async function processFiles(){
     SALES_COL_KEYS = { kCat, kPType, kQty, kDate };
 
     // === Build tradeByYm {branch:{ym:{agreed,evaluated}}} for month filter ===
-    const AGREED_ST_YM=new Set([5,7]);
+    // ตกลงเทรด = สิ้นสุดการประเมินราคา (5) เท่านั้น
+    const AGREED_ST_YM=new Set([5]);
+    const THAI_ST_YM={'สิ้นสุดการประเมินราคา':5,'ยืนยันราคาแล้ว':7,'ยกเลิกรายการ':6,'รอผู้ขายยืนยันราคา':3,'รอการประเมินราคา':1,'อยู่ระหว่างผู้รับซื้อให้ราคา':2,'กำลังสร้างเอกสาร':4};
     const tradeByYm={};
     if(tradeFormat==='search'){
       // derive from raw transaction rows — ไม่ filter ตามวันที่ (เพื่อให้ครบทุกสาขา ทุกเดือน)
       tRows.forEach(r=>{
         let branch;
-        const rawCode=s(r['branch_code']||'');
-        const branchId=rawCode?String(parseInt(rawCode,10)||0):'';
-        if(branchId&&branchId!=='0'&&salesBranchIdMap[branchId]){
-          branch=salesBranchIdMap[branchId];
+        // branch matching (เหมือน parseTradeSearch: รองรับ "ID<n> ชื่อ" + real_branch_id)
+        let _rb=s(r['ชื่อสาขา']||r['BRANCH_NAME']||'');
+        let _exId=''; const _idNoCm=_rb.match(/^ID(\d+)\s+(.+)/i); if(_idNoCm){_exId=_idNoCm[1];_rb=_idNoCm[2];}
+        const _rc=s(r['branch_code']||r['real_branch_id']||r['รหัสสาขา']||r['BRANCH_ID']||_exId||'');
+        const _bid=_rc?String(parseInt(_rc,10)||0):'';
+        if(_bid&&_bid!=='0'&&salesBranchIdMap[_bid]){
+          branch=salesBranchIdMap[_bid];
         } else {
-          const rawBranch=s(r['ชื่อสาขา']||r['BRANCH_NAME']||'');
-          if(!rawBranch)return;
-          const nm=matchBranch(rawBranch,salesKeys);
-          branch=(nm&&nm!==rawBranch)?nm:rawBranch;
+          if(!_rb)return;
+          const nm=matchBranch(_rb,salesKeys);
+          branch=(nm&&nm!==_rb)?nm:_rb;
         }
-        const td=s(r['วันที่คำสั่งเทรด']||'');
-        const tm=td.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+        // date: รองรับทั้ง ISO YYYY-MM-DD และ DD/MM/YYYY
+        let _td=s(r['วันที่คำสั่งเทรด']||'');
+        const _isoM=_td.match(/^(\d{4})-(\d{2})-(\d{2})$/); if(_isoM)_td=`${_isoM[3]}/${_isoM[2]}/${_isoM[1]}`;
+        const tm=_td.match(/(\d{2})\/(\d{2})\/(\d{4})/);
         if(!tm)return;
         const ceY=parseInt(tm[3])>2100?parseInt(tm[3])-543:parseInt(tm[3]);
         const mn=parseInt(tm[2]); if(mn<1||mn>12)return;
@@ -957,7 +963,11 @@ async function processFiles(){
         if(!tradeByYm[branch])tradeByYm[branch]={};
         if(!tradeByYm[branch][ym])tradeByYm[branch][ym]={agreed:0,evaluated:0};
         tradeByYm[branch][ym].evaluated++;
-        if(AGREED_ST_YM.has(Number(r['BIDDING_STATUS'])||0))tradeByYm[branch][ym].agreed++;
+        // status: BIDDING_STATUS (numeric) → fallback สถานะ (Thai text)
+        let _bst=0;
+        if(r['BIDDING_STATUS']!=null&&r['BIDDING_STATUS']!==''){_bst=Number(r['BIDDING_STATUS'])||0;}
+        else{_bst=THAI_ST_YM[s(r['สถานะ']||'')]||0;}
+        if(AGREED_ST_YM.has(_bst))tradeByYm[branch][ym].agreed++;
       });
     } else {
       // report format: use byMonth; infer year from salesByBranchYm keys
@@ -1191,18 +1201,25 @@ function buildMonthlyData(){
   }
   // Monthly trade
   const tradeByMonth={};
-  const AGREED_ST=new Set([5,7]);
+  // ตกลงเทรด = สิ้นสุดการประเมินราคา (5) เท่านั้น
+  const AGREED_ST=new Set([5]);
+  const THAI_ST_MTH={'สิ้นสุดการประเมินราคา':5,'ยืนยันราคาแล้ว':7,'ยกเลิกรายการ':6,'รอผู้ขายยืนยันราคา':3,'รอการประเมินราคา':1,'อยู่ระหว่างผู้รับซื้อให้ราคา':2,'กำลังสร้างเอกสาร':4};
   if(DATA&&DATA.trade_format==='search'){
     RAW_TRADE_ROWS.forEach(r=>{
-      const td=s(r['วันที่คำสั่งเทรด']||'');
-      const m=td.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+      // date: รองรับทั้ง ISO YYYY-MM-DD และ DD/MM/YYYY
+      let _td=s(r['วันที่คำสั่งเทรด']||'');
+      const _iM=_td.match(/^(\d{4})-(\d{2})-(\d{2})$/); if(_iM)_td=`${_iM[3]}/${_iM[2]}/${_iM[1]}`;
+      const m=_td.match(/(\d{2})\/(\d{2})\/(\d{4})/);
       if(!m)return;
       const ceY=parseInt(m[3])>2100?parseInt(m[3])-543:parseInt(m[3]);
       const mn=parseInt(m[2]); if(mn<1||mn>12)return;
       const ym=`${ceY}-${String(mn).padStart(2,'0')}`;
       if(!tradeByMonth[ym])tradeByMonth[ym]={agreed:0,evaluated:0};
       tradeByMonth[ym].evaluated++;
-      if(AGREED_ST.has(Number(r['BIDDING_STATUS'])||0))tradeByMonth[ym].agreed++;
+      let _bst=0;
+      if(r['BIDDING_STATUS']!=null&&r['BIDDING_STATUS']!==''){_bst=Number(r['BIDDING_STATUS'])||0;}
+      else{_bst=THAI_ST_MTH[s(r['สถานะ']||'')]||0;}
+      if(AGREED_ST.has(_bst))tradeByMonth[ym].agreed++;
     });
   } else if(DATA&&DATA.trade_summary){
     // report format: use byMonth; derive year from sales months
