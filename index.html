@@ -834,10 +834,16 @@ function parseTradeSearch(rows, activeDates, salesKeys, empNameMap={}, salesBran
       if(isoM)td=`${isoM[3]}/${isoM[2]}/${isoM[1]}`;
       if(!activeDates.has(td))return;
     }
-    // ยอดเห็นด้วย: ลอง BIDDING_STATUS (ตัวเลข) ก่อน ถ้าไม่มีให้ใช้ สถานะ (Thai text)
+    // สถานะ: ไฟล์ Excel ใช้ BIDDING_STATUS ตรงกับ THAI_STATUS_CODE (เช่น 5 = สิ้นสุดการประเมินราคา)
+    // TechTrade API ส่ง status เป็นตัวเลขคนละชุดกับ Excel (เช่น status "3" แต่ BIDDING_STATUS_NAME = "สิ้นสุดการประเมินราคา")
+    // → ถ้ามีข้อความสถานะไทยให้ map จากข้อความก่อน ค่อย fallback ตัวเลข
     let bst=0;
-    if(r['BIDDING_STATUS']!=null&&r['BIDDING_STATUS']!==''){bst=Number(r['BIDDING_STATUS'])||0;}
-    else{bst=THAI_STATUS_CODE[s(r['สถานะ']||'')]||0;}
+    const stText=s(r['สถานะ']||r['BIDDING_STATUS_NAME']||'');
+    if(stText&&THAI_STATUS_CODE[stText]){
+      bst=THAI_STATUS_CODE[stText];
+    } else if(r['BIDDING_STATUS']!=null&&r['BIDDING_STATUS']!==''){
+      bst=Number(r['BIDDING_STATUS'])||0;
+    }
     const agreed=AGREED_STATUS.has(bst)?1:0;
     if(!summary[branch])summary[branch]={evaluated:0,agreed:0,not_agreed:0};
     summary[branch].evaluated++;
