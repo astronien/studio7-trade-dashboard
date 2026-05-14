@@ -124,6 +124,10 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
     ประมวลผลข้อมูล →
   </button>
 
+  <div id="trade-hint" class="hidden mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5 text-center">
+    📂 กรุณาอัปโหลด<strong>ไฟล์รายงานเทรด</strong> (ช่องที่ 2) เพื่อเปิดใช้ปุ่มประมวลผล
+  </div>
+
   <div id="upload-error" class="hidden mt-4 text-sm text-red-600 bg-red-50 border border-red-100 rounded-xl px-5 py-3"></div>
 
   <div id="loading" class="hidden mt-6 flex flex-col items-center gap-3">
@@ -477,8 +481,16 @@ let TRADE_API_INFO = null;     // { rowCount, dateRange } จาก /api/import/
 function checkProcessReady(){
   const tradeReady = TRADE_API_MODE || fileTrade.length > 0;
   const btn = document.getElementById('process-btn');
-  if(fileSales.length && tradeReady) btn.classList.remove('hidden');
-  else btn.classList.add('hidden');
+  const hint = document.getElementById('trade-hint');
+  if(fileSales.length && tradeReady){
+    btn.classList.remove('hidden');
+    hint.classList.add('hidden');
+  } else {
+    btn.classList.add('hidden');
+    // แสดง hint เฉพาะเมื่ออัปโหลดไฟล์ยอดขายแล้วแต่ยังไม่มีข้อมูลเทรด
+    if(fileSales.length && !tradeReady) hint.classList.remove('hidden');
+    else hint.classList.add('hidden');
+  }
 }
 function setTradeApiMode(on){
   TRADE_API_MODE = on;
