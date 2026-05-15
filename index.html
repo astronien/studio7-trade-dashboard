@@ -2442,7 +2442,7 @@ function tradeRowInActiveRange(r){
   const ym=tradeRowYm(r);
   return !!(ym&&active.indexOf(ym)>=0);
 }
-function empIdForTradeRow(r){
+function billEmpIdForTradeRow(r){
   const billToEmp=DATA?.bill_to_emp||{};
   const tBillCol=DATA?.t_bill_col||'invoice_no';
   const cands=tradeBillCandidates(r,tBillCol);
@@ -2450,10 +2450,12 @@ function empIdForTradeRow(r){
     var m=billToEmp[cands[i]];
     if(m&&m.empId) return String(m.empId);
   }
-  var api=s(r['รหัสพนักงานขาย']||'');
-  return api?String(api):'';
+  return '';
 }
-/** นับประเมิน/ตกลงต่อพนักงานจากแถว trade จริง (ตกลง = เลขบิลตรงไฟล์ขาย) */
+/**
+ * ประเมิน = แถว trade ที่รหัส API หรือบิลขายชี้พนักงานนี้
+ * ตกลง = เลขบิลตรงไฟล์ขาย + พนักงานจากบิลขาย (คอลัม AR) เท่านั้น
+ */
 function calcEmpTradeStats(empId){
   const id=String(empId);
   const salesBillSet=new Set(DATA?.sales_bill_ids||[]);
@@ -2461,9 +2463,11 @@ function calcEmpTradeStats(empId){
   var evaluated=0, agreed=0;
   (RAW_TRADE_ROWS||[]).forEach(function(r){
     if(!tradeRowInActiveRange(r)) return;
-    if(empIdForTradeRow(r)!==id) return;
+    var apiEmp=s(r['รหัสพนักงานขาย']||'').trim();
+    var billEmp=billEmpIdForTradeRow(r);
+    if(apiEmp!==id&&billEmp!==id) return;
     evaluated++;
-    if(isAgreedTrade(r,salesBillSet,tBillCol)) agreed++;
+    if(isAgreedTrade(r,salesBillSet,tBillCol)&&billEmp===id) agreed++;
   });
   return{agreed:agreed,evaluated:evaluated,not_agreed:evaluated-agreed};
 }
