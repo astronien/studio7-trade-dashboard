@@ -2467,11 +2467,14 @@ function calcEmpTradeStats(empId){
     if(!tradeRowInActiveRange(r)) return;
     var apiEmp=s(r['รหัสพนักงานขาย']||'').trim();
     var billEmp=billEmpIdForTradeRow(r);
-    if(apiEmp!==id&&billEmp!==id) return;
-    evaluated++;
-    if(isAgreedTrade(r,salesBillSet,tBillCol)) agreed++;
+
+    // ประเมิน = ทุกแถวที่ API ระบุพนักงานคนนี้
+    if(apiEmp===id) evaluated++;
+
+    // ตกลง = เฉพาะแถวที่ผูกได้ทั้งบิลขาย + พนักงานจากไฟล์ขาย + สถานะตกลงจริง
+    if(billEmp===id && isAgreedTrade(r,salesBillSet,tBillCol)) agreed++;
   });
-  return{agreed:agreed,evaluated:evaluated,not_agreed:evaluated-agreed};
+  return{agreed:agreed,evaluated:evaluated,not_agreed:Math.max(0,evaluated-agreed)};
 }
 function sumEmpTrade(empId){
   if(RAW_TRADE_ROWS&&RAW_TRADE_ROWS.length&&DATA) return calcEmpTradeStats(empId);
