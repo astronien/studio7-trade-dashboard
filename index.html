@@ -143,6 +143,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
       <p class="text-gray-500 text-xs mt-0.5">
         ATT% = <span class="font-semibold text-[#1F3B2D]">จำนวนตกลงเทรด</span>
         ÷ <span class="font-semibold text-[#C8A96B]">จำนวน Device ที่ขาย</span>
+        &nbsp;· ตกลงเทรด = เลขบิล API ตรงกับไฟล์ยอดขาย
         &nbsp;· เลือก Device เพื่อปรับการคำนวณ
       </p>
     </div>
@@ -574,6 +575,15 @@ function expandActiveDatesHull(activeDates){
   }
   return out;
 }
+// #region agent log
+function __agentDbg(payload){
+  var o=Object.assign({sessionId:'6b2706',timestamp:Date.now(),runId:'post-fix'},payload);
+  var body=JSON.stringify(o);
+  fetch('http://127.0.0.1:7824/ingest/6bbb6109-64c3-4b3c-84e9-2d6d35074ef7',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'6b2706'},body:body}).catch(function(){});
+  var base=(typeof location!=='undefined'&&location.origin)?location.origin:'';
+  fetch(base+'/api/debug-log',{method:'POST',headers:{'Content-Type':'application/json'},body:body}).catch(function(){ try{ console.warn('[AGENT_DEBUG_6b2706]',body); }catch(e){} });
+}
+// #endregion
 /**
  * @param {string|null} startIso - YYYY-MM-DD หรือ null = default 12 เดือนล่าสุด
  * @param {string|null} endIso
@@ -600,6 +610,10 @@ async function fetchTradeApiRows(startIso, endIso, limitStr){
   if (!resp.ok) throw new Error('โหลดข้อมูลเทรดจาก API ไม่สำเร็จ (' + resp.status + ')');
   const json = await resp.json();
   if (!json || json.success === false) throw new Error('API ตอบกลับไม่ถูกต้อง');
+  // #region agent log
+  var _d=json.data||[];
+  __agentDbg({location:'index.html:fetchTradeApiRows',message:'trade API response',hypothesisId:'H1',data:{startIso:start,endIso:end,limit:url.searchParams.get('limit'),jsonCount:json.count,dataLen:_d.length,truncationSuspect:!!(json.count&&_d.length&&Number(json.count)===_d.length&&_d.length>=50000)}});
+  // #endregion
   return json.data || [];
 }
 function mapTradeApiToRows(trades){
@@ -781,6 +795,21 @@ function parseASMFile(rows, salesKeys, salesBranchIdMap={}, salesFileIds=null){
   });
   return map;
 }
+/** เลขบิลจากไฟล์ขาย (คอลัม Q) ↔ invoice_no ใน API — ตรงกัน = ตกลงเทรด */
+function normBill(v){
+  var b=s(v).trim();
+  if(!b) return '';
+  if(/^\d+\.0$/.test(b)) b=b.slice(0,-2);
+  return b;
+}
+function tradeBillNo(r,tBillCol){
+  if(tBillCol){ var v=normBill(r[tBillCol]); if(v) return v; }
+  return normBill(r['invoice_no'])||normBill(r['document_no']);
+}
+function isAgreedTrade(r,billToEmp,tBillCol){
+  var bill=tradeBillNo(r,tBillCol);
+  return !!(bill&&billToEmp&&billToEmp[bill]);
+}
 // ตรวจรูปแบบไฟล์ trade: 'search' = transaction-level, 'report' = 3-row-per-branch summary
 function detectTradeFormat(rows){
   const first=rows[0]||{};
@@ -804,12 +833,9 @@ function devFromProduct(prod){
 // billToEmp = {billNo(string) → {empId,name,branch}} lookup จากเลขบิล Sales คอลัม Q
 // tBillCol = ชื่อ header ของคอลัม IT ในไฟล์เทรด (เลขบิลขาย)
 function parseTradeSearch(rows, activeDates, salesKeys, empNameMap={}, salesBranchIdMap={}, billToEmp={}, tBillCol=null){
-  // ตกลง: สิ้นสุดการประเมินราคา (5) + ยืนยันราคาแล้ว (7) — ยอดประเมิน = ทุกสถานะ (นับทุก row)
-  const AGREED_STATUS=new Set([5,7]);
+  // ตกลงเทรด = เลขบิลใน API ตรงกับเลขบิลในไฟล์ยอดขาย · ยอดประเมิน = ทุก row ใน API
   const summary={};
   const byEmp={};
-  // Map สถานะ Thai text → numeric code (เหมือน server-side kpi-calculator)
-  const THAI_STATUS_CODE={'สิ้นสุดการประเมินราคา':5,'ยืนยันราคาแล้ว':7,'ยกเลิกรายการ':6,'รอผู้ขายยืนยันราคา':3,'รอการประเมินราคา':1,'อยู่ระหว่างผู้รับซื้อให้ราคา':2,'กำลังสร้างเอกสาร':4};
   rows.forEach(r=>{
     // ===== Branch matching =====
     // บางสาขา ชื่อสาขา = "ID2926 Studio7-STA-Pakchong" (ไม่มี colon)
@@ -845,27 +871,15 @@ function parseTradeSearch(rows, activeDates, salesKeys, empNameMap={}, salesBran
       if(isoM)td=`${isoM[3]}/${isoM[2]}/${isoM[1]}`;
       if(!activeDates.has(td))return;
     }
-    // สถานะ: ไฟล์ Excel ใช้ BIDDING_STATUS ตรงกับ THAI_STATUS_CODE (เช่น 5 = สิ้นสุดการประเมินราคา)
-    // TechTrade API ส่ง status เป็นตัวเลขคนละชุดกับ Excel (เช่น status "3" แต่ BIDDING_STATUS_NAME = "สิ้นสุดการประเมินราคา")
-    // → ถ้ามีข้อความสถานะไทยให้ map จากข้อความก่อน ค่อย fallback ตัวเลข
-    let bst=0;
-    var stRaw=s(r['สถานะ']||r['BIDDING_STATUS_NAME']||'');
-    var stText=stRaw.replace(/\s+/g,' ').trim();
-    if(stText&&THAI_STATUS_CODE[stText]){
-      bst=THAI_STATUS_CODE[stText];
-    } else if(r['BIDDING_STATUS']!=null&&r['BIDDING_STATUS']!==''){
-      bst=Number(r['BIDDING_STATUS'])||0;
-    }
-    const agreed=AGREED_STATUS.has(bst)?1:0;
+    const billNo=tradeBillNo(r,tBillCol);
+    const billMatch=billNo?billToEmp[billNo]:null;
+    const agreed=isAgreedTrade(r,billToEmp,tBillCol)?1:0;
     if(!summary[branch])summary[branch]={evaluated:0,agreed:0,not_agreed:0};
     summary[branch].evaluated++;
     if(agreed)summary[branch].agreed++;
     else summary[branch].not_agreed++;
 
     // === Lookup พนักงานจากเลขบิลขาย (คอลัม IT ของ trade = คอลัม Q ของ 1724) ===
-    // ถ้า lookup ได้ → ใช้ข้อมูลจากไฟล์ยอดขายแทน (แก้ปัญหากรอกรหัสพนักงานผิด)
-    const billNo=tBillCol?s(r[tBillCol]||''):'';
-    const billMatch=billNo?billToEmp[billNo]:null;
 
     let empId, displayName, empBranch;
     if(billMatch){
@@ -943,10 +957,10 @@ async function processFiles(){
       if(r[kPType]!=='Inventory Item')return;
       const bid=_bid;
       const branch=(bid&&bid!=='0'&&salesBranchIdMap[bid])?salesBranchIdMap[bid]:shortBranch(s(r[kBranch]));
-      if(sBillCol&&oid){
-        const bill=s(r[sBillCol]);
+      if(sBillCol){
+        const bill=normBill(r[sBillCol]);
         if(bill&&!billToEmp[bill])
-          billToEmp[bill]={empId:oid,name:empNameMap[oid]||s(r[kOffName]||''),branch};
+          billToEmp[bill]={empId:oid||'',name:oid?(empNameMap[oid]||s(r[kOffName]||'')):'',branch};
       }
       const qty=Number(r[kQty])||0; if(qty<=0)return;
       const dev=CAT_DEV[s(r[kCat])]; if(!dev)return;
@@ -969,11 +983,33 @@ async function processFiles(){
       if(!salesEmpBranch[oid])salesEmpBranch[oid]=(bid&&bid!=='0'&&salesBranchIdMap[bid])?salesBranchIdMap[bid]:branch;
     });
 
+    // #region agent log
+    (function(){
+      var ad=[...activeDates].sort();
+      __agentDbg({location:'index.html:processFiles:afterSalesPass',message:'sales scope for trade',hypothesisId:'H5',data:{salesRowCount:sRows.length,activeDatesSize:activeDates.size,activeDatesSample:ad.slice(0,3).concat(ad.slice(-2)),salesBranchIdMapSize:Object.keys(salesBranchIdMap).length}});
+    })();
+    // #endregion
+
     document.getElementById('loading-msg').textContent='กำลังดึงข้อมูลเทรดจาก API (ตามช่วงวันที่ในไฟล์ขาย)…';
     var isoRange=isoDateRangeFromSalesActiveDates(activeDates);
-    var limitStr=isoRange?tradeApiLimitForIsoRange(isoRange.start, isoRange.end):'5000';
+    var limitStr=isoRange?tradeApiLimitForIsoRange(isoRange.start, isoRange.end):'50000';
+    // #region agent log
+    __agentDbg({location:'index.html:processFiles:apiQuery',message:'trade API query params',hypothesisId:'H1',data:{isoRange:isoRange,limitStr:limitStr}});
+    // #endregion
     var trades=await fetchTradeApiRows(isoRange&&isoRange.start, isoRange&&isoRange.end, limitStr);
     var tRows=mapTradeApiToRows(trades);
+    // #region agent log
+    (function(){
+      var THK={'สิ้นสุดการประเมินราคา':1,'ยืนยันราคาแล้ว':1,'ยกเลิกรายการ':1,'รอผู้ขายยืนยันราคา':1,'รอการประเมินราคา':1,'อยู่ระหว่างผู้รับซื้อให้ราคา':1,'กำลังสร้างเอกสาร':1};
+      var unk={}, freq={};
+      tRows.forEach(function(r){
+        var st=s(r['สถานะ']||'').replace(/\s+/g,' ').trim();
+        if(st){ freq[st]=(freq[st]||0)+1; if(!THK[st]) unk[st]=(unk[st]||0)+1; }
+      });
+      var westRaw=tRows.filter(function(r){ return /westgate/i.test(s(r['ชื่อสาขา']||'')); }).length;
+      __agentDbg({location:'index.html:processFiles:afterMap',message:'mapped trade rows + status strings',hypothesisId:'H4',data:{tRowsLen:tRows.length,westgateRowHint:westRaw,statusTop:Object.entries(freq).sort(function(a,b){return b[1]-a[1];}).slice(0,8),unknownStatusKeys:Object.keys(unk)}});
+    })();
+    // #endregion
     const tradeFormat0='search';
     const tradeFileRows=[];
 
@@ -990,6 +1026,12 @@ async function processFiles(){
     if(tradeFormat==='search'){
       // ใช้ hull วันที่ระหว่าง min–max จากไฟล์ขาย (ไม่ใช่แค่วันที่มีบรรทัดขาย) เพื่อไม่ตัด trade วันที่ไม่มี sale line
       const tradeActiveDates=expandActiveDatesHull(activeDates);
+      // #region agent log
+      (function(){
+        var td=[...tradeActiveDates].sort();
+        __agentDbg({location:'index.html:processFiles:dateHull',message:'trade date filter sets',hypothesisId:'H2',data:{activeDatesOrig:activeDates.size,hullSize:tradeActiveDates.size,hullSample:td.slice(0,2).concat(td.slice(-1))}});
+      })();
+      // #endregion
       // กรองตามวันที่ขาย Device; ถ้าไม่มี overlap ให้ fallback แสดงข้อมูลทั้งหมด
       let result=parseTradeSearch(tRows,tradeActiveDates,salesKeys,empNameMap,salesBranchIdMap,billToEmp,tBillCol);
       const totalFiltered=Object.values(result.summary).reduce((s,v)=>s+v.evaluated,0);
@@ -1001,6 +1043,14 @@ async function processFiles(){
       }
       tradeSummary=result.summary;
       byEmpTrade=result.byEmp;
+      // #region agent log
+      (function(){
+        var te=0,ta=0; Object.values(tradeSummary).forEach(function(v){ te+=v.evaluated||0; ta+=v.agreed||0; });
+        var wk=Object.keys(tradeSummary).filter(function(k){ return /westgate/i.test(k); });
+        var we=0,wa=0; wk.forEach(function(k){ we+=tradeSummary[k].evaluated||0; wa+=tradeSummary[k].agreed||0; });
+        __agentDbg({location:'index.html:processFiles:afterParseTrade',message:'tradeSummary totals',hypothesisId:'H3',data:{dateFiltered:dateFiltered,totalFiltered:totalFiltered,sumEvaluated:te,sumAgreed:ta,branchKeys:Object.keys(tradeSummary).length,westgateKeys:wk,westgateEval:we,westgateAgreed:wa}});
+      })();
+      // #endregion
 
       // Build date badges
       const sdArr=[...activeDates].sort();
@@ -1089,9 +1139,6 @@ async function processFiles(){
     SALES_COL_KEYS = { kCat, kPType, kQty, kDate };
 
     // === Build tradeByYm {branch:{ym:{agreed,evaluated}}} for month filter ===
-    // ตกลงเทรด = สิ้นสุดการประเมินราคา (5) เท่านั้น
-    const AGREED_ST_YM=new Set([5]);
-    const THAI_ST_YM={'สิ้นสุดการประเมินราคา':5,'ยืนยันราคาแล้ว':7,'ยกเลิกรายการ':6,'รอผู้ขายยืนยันราคา':3,'รอการประเมินราคา':1,'อยู่ระหว่างผู้รับซื้อให้ราคา':2,'กำลังสร้างเอกสาร':4};
     const tradeByYm={};
     const byEmpYm={};  // {empId:{ym:{agreed,evaluated}}} for date range filter
     if(tradeFormat==='search'){
@@ -1121,18 +1168,15 @@ async function processFiles(){
         if(!tradeByYm[branch])tradeByYm[branch]={};
         if(!tradeByYm[branch][ym])tradeByYm[branch][ym]={agreed:0,evaluated:0};
         tradeByYm[branch][ym].evaluated++;
-        // status: BIDDING_STATUS (numeric) → fallback สถานะ (Thai text)
-        let _bst=0;
-        if(r['BIDDING_STATUS']!=null&&r['BIDDING_STATUS']!==''){_bst=Number(r['BIDDING_STATUS'])||0;}
-        else{_bst=THAI_ST_YM[s(r['สถานะ']||'')]||0;}
-        if(AGREED_ST_YM.has(_bst))tradeByYm[branch][ym].agreed++;
-        // ติดตาม per-employee per-YM (ใช้ emp ID จากไฟล์ trade โดยตรง)
-        const _eid=s(r['รหัสพนักงานขาย']||'');
+        const _billNo=tradeBillNo(r,tBillCol);
+        const _billM=_billNo?billToEmp[_billNo]:null;
+        if(isAgreedTrade(r,billToEmp,tBillCol))tradeByYm[branch][ym].agreed++;
+        const _eid=_billM?_billM.empId:s(r['รหัสพนักงานขาย']||'');
         if(_eid){
           if(!byEmpYm[_eid])byEmpYm[_eid]={};
           if(!byEmpYm[_eid][ym])byEmpYm[_eid][ym]={agreed:0,evaluated:0};
           byEmpYm[_eid][ym].evaluated++;
-          if(AGREED_ST_YM.has(_bst))byEmpYm[_eid][ym].agreed++;
+          if(isAgreedTrade(r,billToEmp,tBillCol))byEmpYm[_eid][ym].agreed++;
         }
       });
     } else {

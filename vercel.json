@@ -10,6 +10,9 @@
     },
     "api/trade-stats.js": {
       "maxDuration": 30
+    },
+    "api/debug-log.js": {
+      "maxDuration": 10
     }
   },
   "headers": [
