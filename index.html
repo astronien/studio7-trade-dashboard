@@ -77,9 +77,9 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
       <div id="trade-api-card" class="bg-white rounded-2xl shadow-card border-2 border-[#C8A96B] p-4 text-center">
         <div class="text-2xl mb-1">🔗</div>
         <div class="text-xs font-bold text-[#9E7A3F]">TechTrade API</div>
-        <div id="trade-api-info" class="text-[10px] text-gray-500 mt-0.5">กำลังโหลด…</div>
-        <button type="button" onclick="reloadTradeApi()" class="w-full mt-2.5 text-[10px] font-bold rounded-lg py-1.5 bg-[#1F3B2D] text-white hover:opacity-90 transition-opacity">รีเฟรชสถิติ API</button>
-        <p class="text-[9px] text-gray-400 mt-1 leading-snug px-1">ดึงตามช่วงวันที่ + รหัสสาขาในไฟล์ขาย (API branch)</p>
+        <div id="trade-api-info" class="text-[10px] text-gray-500 mt-0.5">รออัปโหลดไฟล์ยอดขาย</div>
+        <button type="button" id="trade-api-preview-btn" onclick="previewSalesBranchesFromFiles()" class="hidden w-full mt-2.5 text-[10px] font-bold rounded-lg py-1.5 bg-[#C8A96B] text-[#1F3B2D] hover:opacity-90 transition-opacity">ตรวจสอบสาขาในไฟล์ขาย</button>
+        <p class="text-[9px] text-gray-400 mt-1 leading-snug px-1">ดึงเทรดจาก API เมื่อกดประมวลผลเท่านั้น · ตามวันที่ + branch ในไฟล์ขาย</p>
       </div>
     </div>
 
@@ -467,28 +467,49 @@ function checkProcessReady(){
   if(fileSales.length){
     btn.classList.remove('hidden');
     hint.classList.add('hidden');
+    updateTradeApiPreviewButton();
+    previewSalesBranchesFromFiles();
   } else {
     btn.classList.add('hidden');
     hint.classList.add('hidden');
+    setTradeApiCardIdle();
   }
 }
-async function initTradeApiCard(){
-  const info = document.getElementById('trade-api-info');
+function setTradeApiCardIdle(){
+  var info=document.getElementById('trade-api-info');
+  var btn=document.getElementById('trade-api-preview-btn');
+  if(info) info.textContent='รออัปโหลดไฟล์ยอดขาย — ยังไม่ดึงข้อมูลเทรด';
+  if(btn) btn.classList.add('hidden');
+}
+function updateTradeApiPreviewButton(){
+  var btn=document.getElementById('trade-api-preview-btn');
+  if(btn) btn.classList.toggle('hidden', fileSales.length===0);
+}
+/** อ่านไฟล์ขายในเครื่องเท่านั้น — ไม่เรียก API เทรด */
+async function previewSalesBranchesFromFiles(){
+  var info=document.getElementById('trade-api-info');
+  if(!fileSales.length){ setTradeApiCardIdle(); return; }
+  if(info) info.textContent='กำลังอ่านรหัสสาขาจากไฟล์ขาย…';
   try{
-    const r = await fetch('/api/trade-stats');
-    if(!r.ok){ if(info) info.textContent = 'สถิติ API ไม่พร้อม (' + r.status + ')'; return; }
-    const d = await r.json();
-    if(!d.success || !Array.isArray(d.stats)){ if(info) info.textContent = 'รูปแบบข้อมูล API ไม่ถูกต้อง'; return; }
-    const total = d.stats.reduce((s, x) => s + (parseInt(x.total_trades, 10) || 0), 0);
-    const dates = d.stats.map(x => x.last_updated).filter(Boolean).sort();
-    const last = dates.length ? dates[dates.length - 1] : '';
-    TRADE_API_INFO = { rowCount: total, dateRange: { from: last, to: last } };
-    if(info) info.textContent = total.toLocaleString() + ' รายการในระบบ' + (last ? ' · อัปเดต ' + last : '');
-  } catch(e){
-    if(info) info.textContent = 'เชื่อมต่อ API ไม่สำเร็จ: ' + (e?.message || String(e));
+    var rows=await Promise.all(fileSales.map(readXlsx)).then(function(arrs){ return arrs.flat(); });
+    var sS=rows[0]||{};
+    var kBranchId=findCol(sS,['Branch (ID)']);
+    var kBranch=findCol(sS,['Branch (Name)','Branch']);
+    var ids=new Set();
+    rows.forEach(function(r){
+      var bid=String(Number(s(r[kBranchId]))||0);
+      if(bid==='0'){ var m=s(r[kBranch]).match(/^ID(\d+)\s*:\s*/i); if(m) bid=String(parseInt(m[1],10)); }
+      if(bid&&bid!=='0') ids.add(bid);
+    });
+    if(info){
+      if(ids.size) info.textContent='พบ '+ids.size+' สาขาในไฟล์ขาย · กดประมวลผลเพื่อดึงเทรดเฉพาะสาขานี้';
+      else info.textContent='ไม่พบรหัสสาขา — ตรวจคอลัมน์ Branch (ID) ในไฟล์ขาย';
+    }
+  }catch(e){
+    if(info) info.textContent='อ่านไฟล์ไม่สำเร็จ: '+(e&&e.message?e.message:String(e));
   }
 }
-document.addEventListener('DOMContentLoaded', ()=>{ initTradeApiCard(); });
+document.addEventListener('DOMContentLoaded', function(){ setTradeApiCardIdle(); });
 
 // ปิด branch dropdown เมื่อคลิกนอก
 document.addEventListener('click', e=>{
@@ -639,7 +660,7 @@ function mapTradeApiToRows(trades){
   });
 }
 async function reloadTradeApi(){
-  return initTradeApiCard();
+  return previewSalesBranchesFromFiles();
 }
 /** สำรอง: กรองฝั่ง browser หาก API ไม่ส่ง branch หรือ mapping สาขาไม่ตรง */
 function filterTradesForSalesScope(trades, salesBranchIdMap, salesKeys){
@@ -1389,7 +1410,7 @@ function resetDashboard(){
   ['sales-file-list','sales-add-btn','asm-filename'].forEach(id=>{ document.getElementById(id)?.classList.add('hidden'); });
   DEV_KEYS.forEach(d=>{ document.getElementById('dev-'+d).checked=true; });
   updateChips();
-  initTradeApiCard();
+  setTradeApiCardIdle();
 }
 
 // ===== TAB VIEW =====
