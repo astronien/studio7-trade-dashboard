@@ -2496,9 +2496,9 @@ function getActiveYMs(){
 function parseDashboardDate(raw){
   var text=s(raw).trim();
   if(!text) return null;
-  var iso=text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  var iso=text.match(/(\d{4})-(\d{2})-(\d{2})/);
   if(iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
-  var dmY=text.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  var dmY=text.match(/(\d{2})\/(\d{2})\/(\d{4})/);
   if(dmY){
     var year=parseInt(dmY[3],10);
     if(year>2100) year-=543;
@@ -2520,23 +2520,23 @@ function sumSales(b,devs){
     const sb=DATA.sales_by_branch[b]||{};
     return devs.reduce((s,d)=>s+(sb[d]||0),0);
   }
-  if(RAW_SALES_ROWS&&RAW_SALES_ROWS.length&&SALES_COL_KEYS?.kDate){
-    const kDate=SALES_COL_KEYS.kDate;
-    const kBranch=findCol(RAW_SALES_ROWS[0]||{},['Branch (Name)','Branch']);
-    const kBranchId=findCol(RAW_SALES_ROWS[0]||{},['Branch (ID)']);
-    const target=shortBranch(b);
-    let total=0;
-    RAW_SALES_ROWS.forEach(function(r){
-      if(!isWithinSelectedDateRange(r[kDate])) return;
-      var rowBranch=shortBranch(s(r[kBranch]||''));
-      var rowBranchId=s(r[kBranchId]||'');
-      if(target!==rowBranch && target!==shortBranch(DATA?.sales_branch_lookup?.[rowBranchId]||'')) return;
-      var dev=devFromProduct(s(r[findCol(r,['Category (Name)','Category'])]||''));
-      if(dev&&devs.indexOf(dev)>=0) total += Math.max(0, Number(r[findCol(r,['Number','Qty','Quantity'])])||0);
-    });
-    return total;
-  }
-  return devs.reduce((s,d)=>s+active.reduce((sum,ym)=>sum+(DATA.sales_by_branch_ym?.[b]?.[ym]?.[d]||0),0),0);
+  const branchSalesYm=DATA?.sales_by_branch_ym?.[b]||{};
+  let total=0;
+  Object.entries(branchSalesYm).forEach(([ym,sb])=>{
+    if(!active.includes(ym)) return;
+    if(DATE_RANGE_START||DATE_RANGE_END){
+      const ymStart=`${ym}-01`;
+      const y=Number(ym.slice(0,4));
+      const m=Number(ym.slice(5,7));
+      const lastDay=new Date(y,m,0).getDate();
+      const ymEnd=`${ym}-${String(lastDay).padStart(2,'0')}`;
+      const s=DATE_RANGE_START||'0000-01-01';
+      const e=DATE_RANGE_END||'9999-12-31';
+      if(ymEnd<s||ymStart>e) return;
+    }
+    total += devs.reduce((sum,d)=>sum+(sb[d]||0),0);
+  });
+  return total;
 }
 function sumEmpSales(empId,devs){
   const id=String(empId);
@@ -2637,26 +2637,19 @@ function onDateRangeChange(){
     const el=document.getElementById('date-end');
     if(el) el.value=DATE_RANGE_END;
   }
-  render();
-  if(currentView==='emp'&&DATA) renderEmpSummary(getSelDevs(), getAMRMBranches());
-  if(currentView==='rmam'&&DATA) renderRMAM();
-  if(currentView==='year'&&DATA) renderYearlyReport();
+  if(DATA){
+    render();
+    if(currentView==='emp') renderEmpSummary(getSelDevs(), getAMRMBranches());
+    if(currentView==='rmam') renderRMAM();
+    if(currentView==='year') renderYearlyReport();
+  }
 }
 function resetDateRange(){
-  const yms=DATA?.available_yms||[];
-  if(yms.length>0){
-    const latest=yms[yms.length-1];
-    const[y,m]=latest.split('-').map(Number);
-    DATE_RANGE_START=`${y}-${String(m).padStart(2,'0')}-01`;
-    const lastDay=new Date(y,m,0).getDate();
-    DATE_RANGE_END=`${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
-  } else {
-    DATE_RANGE_START=null; DATE_RANGE_END=null;
-  }
   const s=document.getElementById('date-start');
   const e=document.getElementById('date-end');
-  if(s) s.value=DATE_RANGE_START||'';
-  if(e) e.value=DATE_RANGE_END||'';
+  DATE_RANGE_START=null; DATE_RANGE_END=null;
+  if(s) s.value='';
+  if(e) e.value='';
   if(DATA){
     render();
     if(currentView==='emp') renderEmpSummary(getSelDevs(), getAMRMBranches());
