@@ -660,13 +660,53 @@ function mapTradeApiToRows(trades){
   });
 }
 
-function resolveTradeEmpId(r){
+const SUPERSALE_PATTERNS = [
+  /^sup[-_ ]?sale$/i,
+  /^supersale$/i,
+  /^super[-_ ]?sale$/i,
+  /^ss[-_ ]?\d+$/i,
+  /^ss\d+$/i,
+  /^sp[-_ ]?\d+$/i,
+  /^sp\d+$/i,
+  /^sales?[-_ ]?\d+$/i,
+  /^trade[-_ ]?\d+$/i,
+];
+function looksLikeSupersaleToken(v){
+  var text=s(v||'').trim();
+  if(!text) return false;
+  return SUPERSALE_PATTERNS.some(function(re){ return re.test(text); });
+}
+function resolveTradeEmpId(r, empNameMap, billMeta){
   var code=s(r['รหัสพนักงานขาย']||'').trim();
   var name=s(r['ชื่อพนักงานขาย']||'').trim();
+  var codeLooksLikeCode=/^[A-Za-z0-9._-]{2,}$/.test(code) && !/\s/.test(code);
   var nameLooksLikeCode=/^[A-Za-z0-9._-]{2,}$/.test(name) && !/\s/.test(name);
-  // ถ้าชื่อเป็นรหัส ให้ถือว่าเป็น supersale และใช้รหัสในช่องชื่อเป็นรหัสพนักงานแทน
+  var isAccessoryOnly=billMeta&&billMeta.hasAccessory&&!billMeta.hasDevice;
+  var preferCode=billMeta&&billMeta.hasDevice;
+
+  // Bill ที่มี device หรือ device+accessory → ใช้รหัสพนักงานขายจากช่อง code เป็นหลัก
+  if(preferCode){
+    if(codeLooksLikeCode && empNameMap && empNameMap[code]) return code;
+    if(nameLooksLikeCode && empNameMap && empNameMap[name]) return name;
+    if(codeLooksLikeCode) return code;
+    if(nameLooksLikeCode) return name;
+    return code;
+  }
+
+  // Bill ที่เป็น accessory อย่างเดียว → มักเป็น supersale
+  if(isAccessoryOnly){
+    if(nameLooksLikeCode && empNameMap && empNameMap[name]) return name;
+    if(looksLikeSupersaleToken(name) && code) return code;
+    if(codeLooksLikeCode && empNameMap && empNameMap[code]) return code;
+    if(codeLooksLikeCode) return code;
+    if(nameLooksLikeCode) return name;
+    return code;
+  }
+
+  // อื่น ๆ: ใช้ชื่อถ้าเป็นรหัสจริง, ไม่งั้นใช้รหัส
+  if(nameLooksLikeCode && empNameMap && empNameMap[name]) return name;
+  if(codeLooksLikeCode && empNameMap && empNameMap[code]) return code;
   if(nameLooksLikeCode) return name;
-  // ถ้าชื่อเป็นชื่อคน ให้ใช้รหัสจากช่องรหัสเป็นหลัก
   return code;
 }
 async function reloadTradeApi(){
@@ -970,13 +1010,14 @@ function parseTradeSearch(rows, activeDates, salesKeys, empNameMap={}, salesBran
 
     // === Lookup พนักงานจากเลขบิลขาย (คอลัม IT ของ trade = คอลัม Q ของ 1724) ===
 
+    const billMeta=getBillMetaByBill(billNo);
     let empId, displayName, empBranch;
     if(billMatch){
       empId=billMatch.empId;
       displayName=billMatch.name;
       empBranch=billMatch.branch||branch;
     } else {
-      empId=resolveTradeEmpId(r);
+      empId=resolveTradeEmpId(r, empNameMap, billMeta);
       const tradeEmpName=s(r['ชื่อพนักงานขาย']||'');
       const salesEmpName=empId?empNameMap[empId]||'':'';
       displayName=salesEmpName||tradeEmpName;
@@ -1044,8 +1085,16 @@ async function processFiles(){
     // === SINGLE PASS: empNameMap + salesBranchIdMap + dates + salesByBranch + salesByEmp + billToEmp ===
     const empNameMap={}, salesBranchIdMap={}, activeMths=new Set(), activeDates=new Set();
     const salesByBranch={}, salesByEmp={}, salesEmpBranch={}, billToEmp={}, salesBillSet=new Set();
+    const billMetaByBill={}; // {bill:{hasDevice,hasAccessory,deviceQty,accessoryQty}}
     const salesByBranchYm={}; // {branch:{ym:{mac,ipad,iphone,watch}}} for month filter
     const salesByEmpYm={};   // {empId:{ym:{mac,ipad,iphone,watch}}} for date range filter
+    function classifyBillItem(row){
+      var ptype=s(row[kPType]);
+      var cat=s(row[kCat]);
+      var dev=CAT_DEV[cat];
+      var isAccessory=/accessory/i.test(cat)||/accessory/i.test(ptype)||/อุปกรณ์เสริม/i.test(cat)||/อุปกรณ์เสริม/i.test(ptype);
+      return {dev:dev,isAccessory:isAccessory};
+    }
     sRows.forEach(r=>{
       const raw=s(r[kDate]);
       let rowYm=null;
@@ -1074,6 +1123,16 @@ async function processFiles(){
         const bill=normBill(r[sBillCol]);
         if(bill){
           addSalesBill(salesBillSet,bill);
+          const itemInfo=classifyBillItem(r);
+          if(!billMetaByBill[bill]) billMetaByBill[bill]={hasDevice:false,hasAccessory:false,deviceQty:0,accessoryQty:0};
+          if(itemInfo.isAccessory) billMetaByBill[bill].hasAccessory=true;
+          if(itemInfo.dev){
+            billMetaByBill[bill].hasDevice=true;
+            billMetaByBill[bill].deviceQty += Math.max(0, Number(r[kQty])||0);
+          }
+          if(itemInfo.isAccessory){
+            billMetaByBill[bill].accessoryQty += Math.max(0, Number(r[kQty])||0);
+          }
           const nm=s(r[kOffName])||'';
           const prev=billToEmp[bill];
           if(!prev){
@@ -1084,6 +1143,7 @@ async function processFiles(){
           }
           var stripped=bill.replace(/^0+/,'');
           if(stripped&&stripped!==bill) billToEmp[stripped]=billToEmp[bill];
+          if(stripped&&stripped!==bill) billMetaByBill[stripped]=billMetaByBill[bill];
         }
       }
       if(r[kPType]!=='Inventory Item')return;
@@ -1267,6 +1327,7 @@ async function processFiles(){
       all_branch_names:allBranchNames,
       sales_bill_ids:[...salesBillSet],
       bill_to_emp:billToEmp,
+      bill_meta_by_bill:billMetaByBill,
       t_bill_col:tBillCol
     };
     var apiInfo=document.getElementById('trade-api-info');
@@ -2457,6 +2518,10 @@ function tradeRowInActiveRange(r){
   const ym=tradeRowYm(r);
   return !!(ym&&active.indexOf(ym)>=0);
 }
+function getBillMetaByBill(billNo){
+  const billMetaByBill=DATA?.bill_meta_by_bill||{};
+  return billMetaByBill[billNo]||null;
+}
 function billEmpIdForTradeRow(r){
   const billToEmp=DATA?.bill_to_emp||{};
   const tBillCol=DATA?.t_bill_col||'invoice_no';
@@ -2478,7 +2543,7 @@ function calcEmpTradeStats(empId){
   var evaluated=0, agreed=0;
   (RAW_TRADE_ROWS||[]).forEach(function(r){
     if(!tradeRowInActiveRange(r)) return;
-    var apiEmp=resolveTradeEmpId(r);
+    var apiEmp=resolveTradeEmpId(r, DATA?.emp_names||{}, getBillMetaByBill(tradeBillCandidates(r, DATA?.t_bill_col||'invoice_no')[0]||''));
     var billEmp=billEmpIdForTradeRow(r);
 
     // ประเมิน = ทุกแถวที่ระบุพนักงานคนนี้จาก trade API หรือ resolve จาก supersale
